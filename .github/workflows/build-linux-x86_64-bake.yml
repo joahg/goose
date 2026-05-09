@@ -1,0 +1,89 @@
+name: Build linux x86_64 (bake-off)
+
+# Minimal workflow that builds `goose` for x86_64-unknown-linux-gnu only,
+# so we can ship the binary to a Square Blox workstation that has no egress
+# to crates.io. Uploads the binary to the `bake-off-latest` release on
+# joahg/goose so the workstation can `gh release download bake-off-latest`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'git ref to build (defaults to feature/goose-review-cli)'
+        type: string
+        required: false
+        default: 'feature/goose-review-cli'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout target ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            libssl-dev \
+            libdbus-1-dev \
+            libxcb1-dev \
+            libvulkan-dev
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: bake-off-x86_64-linux
+
+      - name: Build goose-cli
+        env:
+          RUST_BACKTRACE: 1
+        run: |
+          rustup target add x86_64-unknown-linux-gnu
+          cargo build --release --target x86_64-unknown-linux-gnu -p goose-cli
+
+      - name: Show binary
+        run: |
+          ls -la target/x86_64-unknown-linux-gnu/release/goose
+          ./target/x86_64-unknown-linux-gnu/release/goose --version
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/x86_64-unknown-linux-gnu/release/goose dist/goose-x86_64-unknown-linux-gnu
+          tar -C dist -czf dist/goose-x86_64-unknown-linux-gnu.tar.gz goose-x86_64-unknown-linux-gnu
+          (cd dist && sha256sum goose-x86_64-unknown-linux-gnu* > SHA256SUMS)
+
+      - name: Upload as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: goose-x86_64-unknown-linux-gnu
+          path: dist/
+
+      - name: Publish to bake-off-latest release (replace asset)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="bake-off-latest"
+          if ! gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --repo "${{ github.repository }}" \
+              --title "Goose linux x86_64 bake-off binary" \
+              --notes "Auto-built by .github/workflows/build-linux-x86_64-bake.yml. Ref: ${{ inputs.ref }} | SHA: ${{ github.sha }}"
+          fi
+          # Replace any existing assets with the same names.
+          for f in dist/goose-x86_64-unknown-linux-gnu dist/goose-x86_64-unknown-linux-gnu.tar.gz dist/SHA256SUMS; do
+            name="$(basename "$f")"
+            gh release delete-asset "$tag" "$name" --repo "${{ github.repository }}" --yes 2>/dev/null || true
+            gh release upload "$tag" "$f" --repo "${{ github.repository }}" --clobber
+          done
+          gh release edit "$tag" --repo "${{ github.repository }}" \
+            --notes "Auto-built by .github/workflows/build-linux-x86_64-bake.yml. Ref: ${{ inputs.ref }} | Built from SHA: ${{ github.sha }} at $(date -u +%Y-%m-%dT%H:%M:%SZ)"

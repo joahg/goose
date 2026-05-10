@@ -6,6 +6,9 @@ name: Build linux x86_64 (bake-off)
 # joahg/goose so the workstation can `gh release download bake-off-latest`.
 
 on:
+  push:
+    branches:
+      - 'bake/build-linux'
   workflow_dispatch:
     inputs:
       ref:
@@ -24,7 +27,7 @@ jobs:
       - name: Checkout target ref
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || 'feature/goose-review-cli' }}
 
       - name: Install Linux build dependencies
         run: |
